@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>呼伦贝尔自驾路书（9.27-10.4） - 百度地图</title>
+  <link rel="preconnect" href="https://api.map.baidu.com" />
+  <style>
+    html, body { height: 100%; margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', Arial, Helvetica, sans-serif; }
+    .app {
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      grid-template-rows: auto 1fr;
+      grid-template-areas: 'header header' 'sidebar map';
+      height: 100%;
+    }
+    header { grid-area: header; padding: 12px 16px; border-bottom: 1px solid #eee; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    header h1 { font-size: 18px; margin: 0; }
+    header .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+    .sidebar { grid-area: sidebar; border-right: 1px solid #eee; padding: 12px; overflow: auto; }
+    .map { grid-area: map; }
+    #map { width: 100%; height: 100%; }
+
+    .day-meta { margin: 8px 0 12px; color: #666; font-size: 13px; }
+    .summary { background: #f7f7fb; border: 1px solid #ececf5; border-radius: 8px; padding: 10px; margin-bottom: 12px; }
+    .segments { display: flex; flex-direction: column; gap: 8px; }
+    .segment { border: 1px solid #eee; border-radius: 8px; padding: 8px; }
+    .segment-title { font-weight: 600; margin-bottom: 6px; }
+    .segment-meta { color: #555; font-size: 13px; }
+
+    .poi { display: inline-block; background: #eef6ff; color: #0a66c2; border: 1px solid #d4e9ff; padding: 2px 8px; border-radius: 999px; font-size: 12px; margin: 2px 4px 2px 0; }
+
+    .hotel { margin-top: 8px; font-size: 13px; color: #333; }
+    .hint { font-size: 12px; color: #666; margin-top: 8px; }
+
+    .footer { font-size: 12px; color: #777; padding-top: 8px; border-top: 1px dashed #eee; margin-top: 12px; }
+
+    select, button { font-size: 14px; padding: 6px 8px; border-radius: 6px; border: 1px solid #ddd; }
+    button.primary { background: #0a66c2; color: #fff; border-color: #0a66c2; }
+    button.ghost { background: #fff; color: #0a66c2; border-color: #0a66c2; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>呼伦贝尔自驾路书（9.27-10.4）</h1>
+      <div class="controls">
+        <label>
+          查看日期：
+          <select id="daySelect"></select>
+        </label>
+        <button id="btnFit" class="ghost" title="缩放到当前路线">适配视野</button>
+        <button id="btnAll" class="primary" title="渲染全行程">渲染全行程</button>
+      </div>
+    </header>
+
+    <aside class="sidebar">
+      <div class="day-meta" id="dayMeta"></div>
+      <div class="summary" id="summaryBox">加载中…</div>
+      <div class="segments" id="segments"></div>
+      <div class="footer">
+        路程与用时来自百度地图驾车规划，实时路况可能影响结果。
+      </div>
+    </aside>
+
+    <section class="map"><div id="map"></div></section>
+  </div>
+
+  <!-- Replace YOUR_BAIDU_MAP_AK_HERE with your Baidu Map AK -->
+  <script src="https://api.map.baidu.com/api?v=3.0&ak=YOUR_BAIDU_MAP_AK_HERE"></script>
+  <script src="./itinerary.js"></script>
+  <script>
+    /**
+     * Utilities
+     */
+    function formatDistance(meters) {
+      if (meters == null) return '-';
+      if (meters < 1000) return meters + ' m';
+      return (meters / 1000).toFixed(1) + ' km';
+    }
+    function formatDuration(seconds) {
+      if (seconds == null) return '-';
+      const h = Math.floor(seconds / 3600);
+      const m = Math.round((seconds % 3600) / 60);
+      if (h <= 0) return m + ' 分钟';
+      return h + ' 小时 ' + m + ' 分钟';
+    }
+
+    function createLabel(text) {
+      const label = new BMap.Label(text, { offset: new BMap.Size(12, -10) });
+      label.setStyle({
+        border: '1px solid #ddd',
+        borderRadius: '6px',
+        padding: '2px 6px',
+        background: '#fff',
+        color: '#333',
+        fontSize: '12px'
+      });
+      return label;
+    }
+
+    /**
+     * Map setup
+     */
+    let map;
+    let overlays = [];
+    let currentBounds = null;
+
+    function clearOverlays() {
+      overlays.forEach(ov => map.removeOverlay(ov));
+      overlays = [];
+      currentBounds = null;
+    }
+
+    function extendBounds(boundsLike) {
+      if (!boundsLike) return;
+      const bounds = boundsLike instanceof BMap.Bounds ? boundsLike : boundsLike.getBounds ? boundsLike.getBounds() : null;
+      if (!bounds) return;
+      if (!currentBounds) { currentBounds = bounds; }
+      else { currentBounds = currentBounds.union(bounds); }
+    }
+
+    function fitView() {
+      if (currentBounds) {
+        map.setViewport(currentBounds);
+      }
+    }
+
+    function addMarker(point, title, color = '#d23f31') {
+      const marker = new BMap.Marker(point, { enableDragging: false });
+      marker.setTitle(title || '');
+      const label = createLabel(title || '');
+      marker.setLabel(label);
+      map.addOverlay(marker);
+      overlays.push(marker);
+      return marker;
+    }
+
+    function localize(keyword, city) {
+      return new Promise((resolve) => {
+        const local = new BMap.LocalSearch(city || keyword, {
+          onSearchComplete: (results) => {
+            if (local.getStatus() === BMAP_STATUS_SUCCESS && results.getCurrentNumPois() > 0) {
+              const poi = results.getPoi(0);
+              resolve(poi.point);
+            } else {
+              resolve(null);
+            }
+          }
+        });
+        local.search(keyword);
+      });
+    }
+
+    function drivingRoute(startKeyword, endKeyword, waypoints = []) {
+      return new Promise((resolve) => {
+        const drv = new BMap.DrivingRoute(map, {
+          policy: BMAP_DRIVING_POLICY_LEAST_TIME,
+          onSearchComplete: (results) => {
+            if (drv.getStatus() === BMAP_STATUS_SUCCESS) {
+              const plan = results.getPlan(0);
+              // Add route polyline overlay and collect bounds
+              const route = plan.getRoute(0);
+              if (route) {
+                const pts = route.getPath();
+                const poly = new BMap.Polyline(pts, { strokeColor: '#0a66c2', strokeWeight: 6, strokeOpacity: 0.85 });
+                map.addOverlay(poly);
+                overlays.push(poly);
+                extendBounds(poly);
+              }
+
+              resolve({
+                distanceMeters: plan.getDistance(false),
+                durationSeconds: plan.getDuration(false),
+                start: startKeyword,
+                end: endKeyword
+              });
+            } else {
+              resolve({ distanceMeters: null, durationSeconds: null, start: startKeyword, end: endKeyword });
+            }
+          }
+        });
+
+        if (waypoints && waypoints.length > 0) {
+          drv.search(startKeyword, endKeyword, { waypoints });
+        } else {
+          drv.search(startKeyword, endKeyword);
+        }
+      });
+    }
+
+    async function renderDay(day) {
+      clearOverlays();
+      const { label, legs, pois, hotel } = day;
+
+      // Sidebar meta
+      document.getElementById('dayMeta').textContent = label + ' ' + (day.title || '');
+
+      const segmentsEl = document.getElementById('segments');
+      segmentsEl.innerHTML = '';
+
+      let totalMeters = 0;
+      let totalSeconds = 0;
+
+      // Add POI markers (geocode to point)
+      if (Array.isArray(pois)) {
+        for (const p of pois) {
+          try {
+            const pt = await localize(p);
+            if (pt) addMarker(pt, p);
+          } catch (e) {}
+        }
+      }
+
+      // Render legs sequentially to keep order
+      for (let i = 0; i < legs.length - 1; i++) {
+        const start = legs[i];
+        const end = legs[i + 1];
+        const res = await drivingRoute(start, end);
+        if (res.distanceMeters != null) totalMeters += res.distanceMeters;
+        if (res.durationSeconds != null) totalSeconds += res.durationSeconds;
+
+        const item = document.createElement('div');
+        item.className = 'segment';
+        item.innerHTML = `
+          <div class="segment-title">${start} → ${end}</div>
+          <div class="segment-meta">距离：${formatDistance(res.distanceMeters)} ｜ 预估：${formatDuration(res.durationSeconds)}</div>
+        `;
+        segmentsEl.appendChild(item);
+      }
+
+      // Hotel info
+      const summaryBox = document.getElementById('summaryBox');
+      summaryBox.innerHTML = `
+        <div>当日合计：<strong>${formatDistance(totalMeters)}</strong> ｜ <strong>${formatDuration(totalSeconds)}</strong></div>
+        ${hotel ? `<div class="hotel">住宿：${hotel}</div>` : ''}
+        ${Array.isArray(pois) && pois.length ? `<div style="margin-top:8px;">景点：${pois.map(p => `<span class='poi'>${p}</span>`).join('')}</div>` : ''}
+        <div class="hint">提示：若搜索失败或不精确，可尝试更具体的地名（如“白鹿岛景区”）。</div>
+      `;
+
+      fitView();
+    }
+
+    async function renderAllDays() {
+      clearOverlays();
+      const segmentsEl = document.getElementById('segments');
+      const summaryBox = document.getElementById('summaryBox');
+      const dayMeta = document.getElementById('dayMeta');
+
+      dayMeta.textContent = '全行程（9.27-10.4）';
+      segmentsEl.innerHTML = '';
+
+      let totalMeters = 0;
+      let totalSeconds = 0;
+
+      for (const day of itinerary) {
+        const { label, legs } = day;
+        for (let i = 0; i < legs.length - 1; i++) {
+          const start = legs[i];
+          const end = legs[i + 1];
+          // Color per day
+          const res = await new Promise((resolve) => {
+            const drv = new BMap.DrivingRoute(map, {
+              policy: BMAP_DRIVING_POLICY_LEAST_TIME,
+              onSearchComplete: (results) => {
+                if (drv.getStatus() === BMAP_STATUS_SUCCESS) {
+                  const plan = results.getPlan(0);
+                  const route = plan.getRoute(0);
+                  if (route) {
+                    const pts = route.getPath();
+                    const colors = ['#0a66c2', '#d23f31', '#2a7f62', '#c15c00', '#7b2cbf', '#2d6cdf', '#e83e8c', '#00897b'];
+                    const color = colors[itinerary.indexOf(day) % colors.length];
+                    const poly = new BMap.Polyline(pts, { strokeColor: color, strokeWeight: 5, strokeOpacity: 0.9 });
+                    map.addOverlay(poly);
+                    overlays.push(poly);
+                    extendBounds(poly);
+                  }
+                  resolve({ distanceMeters: plan.getDistance(false), durationSeconds: plan.getDuration(false) });
+                } else {
+                  resolve({ distanceMeters: null, durationSeconds: null });
+                }
+              }
+            });
+            drv.search(start, end);
+          });
+          if (res.distanceMeters != null) totalMeters += res.distanceMeters;
+          if (res.durationSeconds != null) totalSeconds += res.durationSeconds;
+
+          const item = document.createElement('div');
+          item.className = 'segment';
+          item.innerHTML = `<div class="segment-title">${label}｜${start} → ${end}</div>
+            <div class="segment-meta">距离：${formatDistance(res.distanceMeters)} ｜ 预估：${formatDuration(res.durationSeconds)}</div>`;
+          segmentsEl.appendChild(item);
+        }
+      }
+
+      summaryBox.innerHTML = `<div>全行程合计：<strong>${formatDistance(totalMeters)}</strong> ｜ <strong>${formatDuration(totalSeconds)}</strong></div>`;
+
+      fitView();
+    }
+
+    function mountDayOptions() {
+      const select = document.getElementById('daySelect');
+      select.innerHTML = '';
+      itinerary.forEach((d, idx) => {
+        const opt = document.createElement('option');
+        opt.value = String(idx);
+        opt.textContent = d.label + '｜' + (d.title || d.legs.join(' - '));
+        select.appendChild(opt);
+      });
+      select.addEventListener('change', () => {
+        const idx = Number(select.value);
+        renderDay(itinerary[idx]);
+      });
+    }
+
+    function init() {
+      if (typeof BMap === 'undefined') {
+        alert('Baidu Map API 未加载。请在 index.html 中将 YOUR_BAIDU_MAP_AK_HERE 替换为你的百度地图AK，并确保白名单包含 http://localhost 或 http://127.0.0.1。');
+        return;
+      }
+      map = new BMap.Map('map', { enableMapClick: false });
+      map.enableScrollWheelZoom(true);
+      map.addControl(new BMap.NavigationControl());
+      map.addControl(new BMap.ScaleControl());
+
+      mountDayOptions();
+
+      document.getElementById('btnFit').addEventListener('click', fitView);
+      document.getElementById('btnAll').addEventListener('click', renderAllDays);
+
+      // Default render first day
+      if (itinerary.length > 0) {
+        renderDay(itinerary[0]);
+      }
+    }
+
+    window.addEventListener('load', init);
+  </script>
+</body>
+</html>
